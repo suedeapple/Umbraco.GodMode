@@ -199,6 +199,7 @@ namespace Diplo.GodMode.Services
             }
 
             var process = Process.GetCurrentProcess();
+            var startedAt = GetProcessStartedUtc(process);
 
             return new UtilityDiagnostics
             {
@@ -221,8 +222,8 @@ namespace Diplo.GodMode.Services
                     ContentRootPath = env.ContentRootPath,
                     WebRootPath = webRoot,
                     ProcessId = Environment.ProcessId,
-                    StartedAt = StartedAt,
-                    Uptime = FormatDuration(DateTime.UtcNow - StartedAt),
+                    StartedAt = startedAt,
+                    Uptime = FormatDuration(DateTime.UtcNow - startedAt),
                     GodModeVersion = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                         ?? assembly.GetName().Version?.ToString()
                         ?? string.Empty
@@ -354,6 +355,19 @@ namespace Diplo.GodMode.Services
             }
 
             return new FolderSizeInfo { Label = label, Path = path, Exists = true, Size = size, FileCount = count };
+        }
+
+        private static DateTime GetProcessStartedUtc(Process process)
+        {
+            try
+            {
+                return process.StartTime.ToUniversalTime();
+            }
+            catch
+            {
+                // Deliberate: StartTime can throw in restricted hosting environments.
+                return StartedAt;
+            }
         }
 
         private static string FormatDuration(TimeSpan duration)

@@ -3,7 +3,7 @@ import { UmbElementMixin } from "@umbraco-cms/backoffice/element-api";
 import { godmodeGet } from "../api/client";
 import "../shared";
 import type { MemberGroupModel, MemberModel, Page } from "../shared/types";
-import { truncate } from "../shared/format";
+import { formatDate } from "../shared/format";
 import { editUrl, openEditorModal } from "../shared/edit-links";
 import { openEvidenceDrawer } from "../shared/evidence-drawer";
 
@@ -114,7 +114,7 @@ export class GodModeMemberBrowserElement extends UmbElementMixin(LitElement) {
                             name: member.name,
                             username: member.username,
                             email: member.email,
-                            created: truncate(member.createDate, 22),
+                            created: formatDate(member.createDate),
                             approved: member.isApproved,
                             lockedOut: member.isLockedOut,
                             usesTwoFactor: member.usesTwoFactor
@@ -283,7 +283,7 @@ export class GodModeMemberBrowserElement extends UmbElementMixin(LitElement) {
                                                         ${m.usesTwoFactor ? html`<span class="pill">2FA</span>` : ""}
                                                     </div>
                                                 </uui-table-cell>
-                                                <uui-table-cell><small>${truncate(m.createDate, 22)}</small></uui-table-cell>
+                                                <uui-table-cell><small><godmode-date .value=${m.createDate}></godmode-date></small></uui-table-cell>
                                                 <uui-table-cell class="action-cell">
                                                     <div class="action-wrap">
                                                         <uui-button compact look="secondary" label="Details" @click=${(e: Event) => this._openDetails(m, e)}>Details</uui-button>

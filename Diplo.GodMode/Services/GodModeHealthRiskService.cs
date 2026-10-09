@@ -1,4 +1,4 @@
-using Diplo.GodMode.Models;
+﻿using Diplo.GodMode.Models;
 using Diplo.GodMode.Services.Interfaces;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -17,6 +17,7 @@ namespace Diplo.GodMode.Services
         private readonly IOptions<GlobalSettings> globalSettings;
         private readonly IOptions<ModelsBuilderSettings> modelsBuilderSettings;
         private readonly IOptions<GodModeConfig> godModeConfig;
+        private readonly IServerTimeService serverTimeService;
 
         public GodModeHealthRiskService(
             IUmbracoDataService dataService,
@@ -26,7 +27,8 @@ namespace Diplo.GodMode.Services
             IHostEnvironment hostEnvironment,
             IOptions<GlobalSettings> globalSettings,
             IOptions<ModelsBuilderSettings> modelsBuilderSettings,
-            IOptions<GodModeConfig> godModeConfig)
+            IOptions<GodModeConfig> godModeConfig,
+            IServerTimeService serverTimeService)
         {
             this.dataService = dataService;
             this.dataBaseService = dataBaseService;
@@ -36,6 +38,7 @@ namespace Diplo.GodMode.Services
             this.globalSettings = globalSettings;
             this.modelsBuilderSettings = modelsBuilderSettings;
             this.godModeConfig = godModeConfig;
+            this.serverTimeService = serverTimeService;
         }
 
         public async Task<IEnumerable<HealthRiskFinding>> BuildHealthRiskFindingsAsync(CancellationToken cancellationToken = default)
@@ -425,12 +428,187 @@ namespace Diplo.GodMode.Services
                     "Switch to SourceCodeManual (or Nothing) for production and generate models at build/deploy time."));
             }
 
+            AddDateTimeFindings(findings);
+            AddScheduledPublishingFindings(findings);
+
             return findings
                 .Where(x => !IsIgnoredAlias(x.EntityAlias))
                 .OrderByDescending(x => x.Score)
                 .ThenBy(x => x.Category)
                 .ThenBy(x => x.Title)
                 .ThenBy(x => x.EntityName);
+        }
+
+        private void AddDateTimeFindings(List<HealthRiskFinding> findings)
+        {
+            var time = serverTimeService.GetServerTime();
+            var migration = time.SystemDateMigration;
+            var evidence = serverTimeService.GetSystemDateEvidence();
+
+            if (migration.ConfiguredTimeZoneValid == false)
+            {
+                findings.Add(CreateFinding(
+                    "time-migration-zone-invalid",
+                    "High",
+                    "Dates & Time",
+                    "SystemDateMigration time zone is not recognised",
+                    $"Umbraco:CMS:SystemDateMigration:LocalServerTimeZone is set to '{migration.ConfiguredTimeZone}', which is not a time zone this server recognises. The Umbraco 17 UTC date migration will fail if it still needs to run.",
+                    "Configuration",
+                    "Umbraco:CMS:SystemDateMigration:LocalServerTimeZone",
+                    string.Empty,
+                    string.Empty,
+                    "Use a valid time zone id. SQL Server needs a Windows id such as 'GMT Standard Time'; on Linux an IANA id such as 'Europe/London' also resolves."));
+            }
+            else if (migration.ConfiguredTimeZoneValid == true && !migration.EffectiveTimeZoneMatchesServer)
+            {
+                findings.Add(CreateFinding(
+                    "time-migration-zone-differs",
+                    "Low",
+                    "Dates & Time",
+                    "SystemDateMigration time zone differs from this server",
+                    $"LocalServerTimeZone is '{migration.ConfiguredTimeZone}' but this server runs in '{time.TimeZoneId}' ({time.UtcOffset}). That is correct if the database was written by a server in the configured zone, but wrong otherwise.",
+                    "Configuration",
+                    "Umbraco:CMS:SystemDateMigration:LocalServerTimeZone",
+                    string.Empty,
+                    string.Empty,
+                    "Confirm the configured zone matches the server that wrote the dates before the upgrade. Once the migration has run the setting can be removed."));
+            }
+
+            if (!migration.Enabled && !migration.EffectiveTimeZoneIsUtc)
+            {
+                findings.Add(CreateFinding(
+                    "time-migration-disabled",
+                    "Medium",
+                    "Dates & Time",
+                    "UTC system date migration is disabled",
+                    $"Umbraco:CMS:SystemDateMigration:Enabled is false and the server time zone is '{time.TimeZoneId}' ({time.UtcOffset}). If this site was upgraded from Umbraco 16 or earlier, existing dates were left in local time while Umbraco 17 now reads them as UTC.",
+                    "Configuration",
+                    "Umbraco:CMS:SystemDateMigration:Enabled",
+                    string.Empty,
+                    string.Empty,
+                    "If dates look shifted, convert the system date columns to UTC manually (or restore and re-run the upgrade with the migration enabled)."));
+            }
+
+            if (migration.Enabled && migration.UsesBaseOffsetOnly && !migration.EffectiveTimeZoneIsUtc && time.SupportsDaylightSavingTime)
+            {
+                findings.Add(CreateFinding(
+                    "time-migration-sqlite-dst",
+                    "Low",
+                    "Dates & Time",
+                    "SQLite UTC migration ignores daylight saving",
+                    $"On SQLite the Umbraco 17 UTC migration converts dates using the base offset of '{migration.EffectiveTimeZone}' only. Dates originally written during daylight saving time may be an hour out after an upgrade.",
+                    "Database",
+                    "SQLite",
+                    string.Empty,
+                    string.Empty,
+                    "Only relevant to sites upgraded from Umbraco 16 or earlier. Spot check summer dates in the content and audit history."));
+            }
+
+            foreach (var entry in evidence.MigrationLogEntries.Where(x => x.Level is "Error" or "Fatal"))
+            {
+                findings.Add(CreateFinding(
+                    "time-migration-log-error",
+                    "High",
+                    "Dates & Time",
+                    "UTC system date migration logged an error",
+                    $"{entry.Timestamp:yyyy-MM-dd HH:mm:ss zzz}: {entry.Message}",
+                    "Migration",
+                    "MigrateSystemDatesToUtc",
+                    string.Empty,
+                    string.Empty,
+                    "Check the full log entry. The migration may need LocalServerTimeZone set to a Windows time zone id before it can complete."));
+            }
+
+            foreach (var row in evidence.FutureDatedRows.Where(x => x.Count > 0))
+            {
+                findings.Add(CreateFinding(
+                    "time-future-dated-rows",
+                    "High",
+                    "Dates & Time",
+                    "System dates are in the future",
+                    $"{row.Count:n0} row(s) in {row.Table}.{row.Column} are dated after the current UTC time (latest {row.Latest:yyyy-MM-dd HH:mm} UTC). This usually means local times are being read as UTC, for example when the Umbraco 17 date migration was skipped or ran with the wrong time zone.",
+                    "Database",
+                    $"{row.Table}.{row.Column}",
+                    string.Empty,
+                    string.Empty,
+                    "Compare these dates with when the changes really happened. If they are shifted by the server's UTC offset, correct the columns to UTC."));
+            }
+        }
+
+        private void AddScheduledPublishingFindings(List<HealthRiskFinding> findings)
+        {
+            const int maxOverdueFindings = 25;
+
+            var schedules = serverTimeService.GetContentSchedules();
+            var overdue = schedules.Items.Where(x => x.IsOverdue && !x.Trashed).ToList();
+
+            foreach (var item in overdue.Take(maxOverdueFindings))
+            {
+                var action = item.Action == "Expire" ? "unpublish" : "publish";
+                var culture = string.IsNullOrEmpty(item.Culture) ? string.Empty : $" ({item.Culture})";
+
+                findings.Add(CreateFinding(
+                    "schedule-overdue",
+                    "High",
+                    "Scheduled Publishing",
+                    $"Scheduled {action} did not run",
+                    $"{item.Name}{culture} was scheduled to {action} at {item.Date:yyyy-MM-dd HH:mm} UTC, more than {schedules.OverdueAfterMinutes} minutes ago, and the schedule is still pending.",
+                    "Content",
+                    item.Name,
+                    item.ContentTypeAlias,
+                    item.NodeKey.ToString(),
+                    "Check the ScheduledPublishingJob in the Scheduled Publishing view and the logs for publishing errors (for example validation failures or a missing parent)."));
+            }
+
+            if (overdue.Count > maxOverdueFindings)
+            {
+                findings.Add(CreateFinding(
+                    "schedule-overdue-more",
+                    "High",
+                    "Scheduled Publishing",
+                    "More scheduled publishing did not run",
+                    $"A further {overdue.Count - maxOverdueFindings:n0} overdue schedule(s) are not listed individually.",
+                    "Content",
+                    "Scheduled Publishing",
+                    string.Empty,
+                    string.Empty,
+                    "Open the Scheduled Publishing view to see every overdue entry."));
+            }
+
+            var publishingJob = schedules.Jobs.FirstOrDefault(x => x.Name == "ScheduledPublishingJob");
+            foreach (var job in schedules.Jobs.Where(x => x.IsStale))
+            {
+                var isPublishing = job == publishingJob;
+
+                findings.Add(CreateFinding(
+                    "background-job-stale",
+                    isPublishing && schedules.Items.Any() ? "High" : "Medium",
+                    "Scheduled Publishing",
+                    "Background job has stopped running",
+                    $"The distributed job {job.Name} runs every {TimeSpan.FromSeconds(job.PeriodSeconds)} but last ran at {job.LastRun:yyyy-MM-dd HH:mm} UTC (last attempt {job.LastAttemptedRun:yyyy-MM-dd HH:mm} UTC){(job.IsRunning ? " and is still marked as running" : string.Empty)}.",
+                    "Background Job",
+                    job.Name,
+                    string.Empty,
+                    string.Empty,
+                    job.IsRunning
+                        ? "A job stuck as running usually means a server stopped mid-run. Check the logs, and restart the site if it does not recover."
+                        : "Check that background jobs are enabled and that at least one server is running, then check the logs for errors."));
+            }
+
+            foreach (var server in schedules.Servers.Where(x => x.IsActive && x.IsStale))
+            {
+                findings.Add(CreateFinding(
+                    "server-stale",
+                    "Low",
+                    "Scheduled Publishing",
+                    "Registered server has stopped checking in",
+                    $"{server.ComputerName} ({server.Address}) is marked active but last checked in at {server.LastNotifiedDate:yyyy-MM-dd HH:mm} UTC.",
+                    "Server",
+                    server.ComputerName,
+                    string.Empty,
+                    string.Empty,
+                    "If the server has been retired this is harmless and Umbraco will clear it; otherwise check the server is up and can reach the database."));
+            }
         }
 
         private bool IsIgnoredAlias(string alias)
