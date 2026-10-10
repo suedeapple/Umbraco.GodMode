@@ -63,13 +63,19 @@ public class SystemDateMigrationInfo
 
     public string ConfiguredTimeZone { get; set; } = string.Empty;
 
-    /// <summary>Null when no time zone is configured; otherwise whether the configured id resolves on this server.</summary>
+    /// <summary>Validity for the database provider; null when unconfigured or validation is unavailable.</summary>
     public bool? ConfiguredTimeZoneValid { get; set; }
+
+    public string TimeZoneValidationMessage { get; set; } = string.Empty;
+
+    public bool EffectiveTimeZoneResolved { get; set; }
+
+    public bool? EffectiveTimeZoneSupportsDaylightSaving { get; set; }
 
     /// <summary>The time zone the migration would use (configured, or the detected server zone).</summary>
     public string EffectiveTimeZone { get; set; } = string.Empty;
 
-    /// <summary>Whether the effective time zone has the same current UTC offset as this server.</summary>
+    /// <summary>Whether the effective time zone has the same adjustment rules as this server.</summary>
     public bool EffectiveTimeZoneMatchesServer { get; set; }
 
     /// <summary>True when the effective time zone is UTC, so the migration has nothing to convert.</summary>
@@ -93,6 +99,18 @@ public class SystemDateMigrationInfo
 /// </summary>
 public class SystemDateEvidence
 {
+    public DateTime CheckedAtUtc { get; set; }
+
+    public DateTime FutureDateCutoffUtc { get; set; }
+
+    public bool LogCheckSucceeded { get; set; }
+
+    public string LogCheckMessage { get; set; } = string.Empty;
+
+    public bool DatabaseCheckSucceeded { get; set; }
+
+    public string DatabaseCheckMessage { get; set; } = string.Empty;
+
     public IEnumerable<SystemDateLogEntry> MigrationLogEntries { get; set; } = [];
 
     public IEnumerable<FutureDatedRows> FutureDatedRows { get; set; } = [];
@@ -109,6 +127,10 @@ public class SystemDateLogEntry
 
 public class FutureDatedRows
 {
+    public bool CheckSucceeded { get; set; }
+
+    public string CheckMessage { get; set; } = string.Empty;
+
     public string Table { get; set; } = string.Empty;
 
     public string Column { get; set; } = string.Empty;
@@ -116,4 +138,13 @@ public class FutureDatedRows
     public long Count { get; set; }
 
     public DateTime? Latest { get; set; }
+}
+
+public class SystemDateLogEvidence
+{
+    public bool CheckSucceeded { get; set; }
+
+    public string CheckMessage { get; set; } = string.Empty;
+
+    public IEnumerable<SystemDateLogEntry> Entries { get; set; } = [];
 }

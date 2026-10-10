@@ -69,7 +69,9 @@ export function serverTimeZoneId(): string | null {
 export function parseApiDate(value: string | null | undefined): Date | null {
     if (!value) return null;
     const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(value);
-    const date = new Date(hasZone ? value : `${value.replace(" ", "T")}Z`);
+    const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z`
+        : hasZone ? value : `${value.replace(" ", "T")}Z`;
+    const date = new Date(normalized);
     return Number.isNaN(date.getTime()) ? null : date;
 }
 

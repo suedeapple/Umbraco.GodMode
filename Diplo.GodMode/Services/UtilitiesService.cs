@@ -199,7 +199,7 @@ namespace Diplo.GodMode.Services
             }
 
             var process = Process.GetCurrentProcess();
-            var startedAt = GetProcessStartedUtc(process);
+            var startedAt = ProcessTimeHelper.GetStartedUtc(process, StartedAt);
 
             return new UtilityDiagnostics
             {
@@ -355,19 +355,6 @@ namespace Diplo.GodMode.Services
             }
 
             return new FolderSizeInfo { Label = label, Path = path, Exists = true, Size = size, FileCount = count };
-        }
-
-        private static DateTime GetProcessStartedUtc(Process process)
-        {
-            try
-            {
-                return process.StartTime.ToUniversalTime();
-            }
-            catch
-            {
-                // Deliberate: StartTime can throw in restricted hosting environments.
-                return StartedAt;
-            }
         }
 
         private static string FormatDuration(TimeSpan duration)

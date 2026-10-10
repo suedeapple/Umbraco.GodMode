@@ -1,12 +1,15 @@
-using System.Diagnostics;
 using System.Globalization;
+using Diplo.GodMode.Helpers;
 using Diplo.GodMode.Models;
 using Diplo.GodMode.Services.Interfaces;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Caching.Memory;
+using Umbraco.Cms.Core;
 using Umbraco.Cms.Core.Configuration.Models;
 using Umbraco.Cms.Core.Services;
 using Umbraco.Cms.Core.Sync;
+using Umbraco.Cms.Infrastructure;
 
 namespace Diplo.GodMode.Services
 {
@@ -28,6 +31,7 @@ namespace Diplo.GodMode.Services
         private static readonly DateTime FallbackStartedUtc = DateTime.UtcNow;
 
         private static readonly string[] MigrationUtcIdentifiers = ["Coordinated Universal Time", "UTC"];
+        private static readonly object EvidenceLock = new();
 
         private readonly TimeProvider timeProvider;
         private readonly IOptions<SystemDateMigrationSettings> migrationSettings;
@@ -36,6 +40,7 @@ namespace Diplo.GodMode.Services
         private readonly IUmbracoDatabaseService databaseService;
         private readonly IGodModeLogService logService;
         private readonly ILogger<ServerTimeService> logger;
+        private readonly IMemoryCache memoryCache;
 
         public ServerTimeService(
             TimeProvider timeProvider,
@@ -44,7 +49,8 @@ namespace Diplo.GodMode.Services
             IServerRoleAccessor serverRoleAccessor,
             IUmbracoDatabaseService databaseService,
             IGodModeLogService logService,
-            ILogger<ServerTimeService> logger)
+            ILogger<ServerTimeService> logger,
+            IMemoryCache memoryCache)
         {
             this.timeProvider = timeProvider;
             this.migrationSettings = migrationSettings;
@@ -53,7 +59,10 @@ namespace Diplo.GodMode.Services
             this.databaseService = databaseService;
             this.logService = logService;
             this.logger = logger;
+            this.memoryCache = memoryCache;
         }
+
+        public bool AutomaticServerRegistration => serverRoleAccessor is ElectedServerRoleAccessor;
 
         public ServerTimeInfo GetServerTime()
         {
@@ -87,42 +96,61 @@ namespace Diplo.GodMode.Services
                 CultureName = culture.Name,
                 ShortDatePattern = culture.DateTimeFormat.ShortDatePattern,
                 LongTimePattern = culture.DateTimeFormat.LongTimePattern,
-                ProcessStartedUtc = GetProcessStartedUtc(),
+                ProcessStartedUtc = ProcessTimeHelper.GetStartedUtc(FallbackStartedUtc),
                 SystemDateMigration = GetMigrationInfo(zone, utcNow)
             };
         }
 
         public SystemDateEvidence GetSystemDateEvidence()
         {
-            var evidence = new SystemDateEvidence();
+            lock (EvidenceLock)
+            {
+                return memoryCache.GetOrCreate("godmode:system-date-evidence:v2", entry =>
+                {
+                    // Independent of changing file signatures; concurrent requests share the same scan.
+                    entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2);
+                    return ReadSystemDateEvidence();
+                })!;
+            }
+        }
+
+        private SystemDateEvidence ReadSystemDateEvidence()
+        {
+            var utcNow = timeProvider.GetUtcNow().UtcDateTime;
+            var evidence = new SystemDateEvidence
+            {
+                CheckedAtUtc = utcNow,
+                FutureDateCutoffUtc = utcNow.Add(FutureDateTolerance)
+            };
 
             try
             {
-                evidence.MigrationLogEntries = logService
-                    .GetLogs(1, 10, null, null, null, "MigrateSystemDatesToUtc", null)
-                    .Items
-                    .Select(x => new SystemDateLogEntry
-                    {
-                        Timestamp = x.Timestamp,
-                        Level = x.Level,
-                        Message = x.Message
-                    })
-                    .ToList();
+                var logs = logService.GetSystemDateMigrationLogs();
+                evidence.MigrationLogEntries = logs.Entries;
+                evidence.LogCheckSucceeded = logs.CheckSucceeded;
+                evidence.LogCheckMessage = logs.CheckMessage;
             }
             catch (Exception ex)
             {
                 logger.LogDebug(ex, "Could not search the logs for the UTC system date migration.");
+                evidence.LogCheckMessage = "The local migration logs could not be checked.";
             }
 
             try
             {
                 evidence.FutureDatedRows = databaseService
-                    .GetFutureDatedRows(timeProvider.GetUtcNow().UtcDateTime.Add(FutureDateTolerance))
+                    .GetFutureDatedRows(evidence.FutureDateCutoffUtc)
                     .ToList();
+                evidence.DatabaseCheckSucceeded = evidence.FutureDatedRows.Count() == 4
+                    && evidence.FutureDatedRows.All(x => x.CheckSucceeded);
+                evidence.DatabaseCheckMessage = evidence.DatabaseCheckSucceeded
+                    ? "Checked four system date columns. No matches does not establish that historical dates are correct."
+                    : "One or more system date columns could not be checked; results are partial.";
             }
             catch (Exception ex)
             {
                 logger.LogDebug(ex, "Could not check for future dated rows.");
+                evidence.DatabaseCheckMessage = "System date columns could not be checked.";
             }
 
             return evidence;
@@ -139,7 +167,18 @@ namespace Diplo.GodMode.Services
                 item.IsOverdue = DateTime.SpecifyKind(item.Date, DateTimeKind.Utc) < overdueCutoff;
             }
 
-            var jobs = databaseService.GetDistributedJobs().ToList();
+            var jobsCheckSucceeded = true;
+            List<DistributedJobInfo> jobs;
+            try
+            {
+                jobs = databaseService.GetDistributedJobs().ToList();
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not read distributed jobs.");
+                jobs = [];
+                jobsCheckSucceeded = false;
+            }
             foreach (var job in jobs)
             {
                 // Allow a few missed periods (and at least five minutes) before calling a job stale.
@@ -147,19 +186,25 @@ namespace Diplo.GodMode.Services
                 job.IsStale = DateTime.SpecifyKind(job.LastRun, DateTimeKind.Utc) < utcNow - allowance;
             }
 
+            var servers = GetRegisteredServers(utcNow, out var serversCheckSucceeded);
             return new ContentScheduleOverview
             {
                 ServerUtcNow = utcNow,
                 OverdueAfterMinutes = OverdueAfterMinutes,
                 Items = items,
                 Jobs = jobs,
-                Servers = GetRegisteredServers(utcNow),
-                CurrentServerRole = GetCurrentServerRole()
+                Servers = servers,
+                CurrentServerRole = GetCurrentServerRole(),
+                AutomaticServerRegistration = AutomaticServerRegistration,
+                ScheduledPublishingSuspended = !Suspendable.ScheduledPublishing.CanRun,
+                JobsCheckSucceeded = jobsCheckSucceeded,
+                ServersCheckSucceeded = serversCheckSucceeded
             };
         }
 
-        private IEnumerable<RegisteredServerInfo> GetRegisteredServers(DateTime utcNow)
+        private IEnumerable<RegisteredServerInfo> GetRegisteredServers(DateTime utcNow, out bool checkSucceeded)
         {
+            checkSucceeded = true;
             try
             {
                 return databaseService.GetRegistredServers()
@@ -179,6 +224,7 @@ namespace Diplo.GodMode.Services
             catch (Exception ex)
             {
                 logger.LogDebug(ex, "Could not read registered servers.");
+                checkSucceeded = false;
                 return [];
             }
         }
@@ -199,7 +245,8 @@ namespace Diplo.GodMode.Services
         private SystemDateMigrationInfo GetMigrationInfo(TimeZoneInfo serverZone, DateTimeOffset utcNow)
         {
             var settings = migrationSettings.Value;
-            var configured = settings.LocalServerTimeZone?.Trim() ?? string.Empty;
+            // Umbraco passes an explicit value through unchanged; do not silently validate a trimmed ID.
+            var configured = string.IsNullOrWhiteSpace(settings.LocalServerTimeZone) ? string.Empty : settings.LocalServerTimeZone;
             TimeZoneInfo? configuredZone = null;
 
             if (configured.Length > 0)
@@ -219,16 +266,47 @@ namespace Diplo.GodMode.Services
             var databaseType = GetDatabaseType();
             var isSqlite = databaseType.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase);
 
+            bool? valid = null;
+            var validationMessage = "No explicit time zone configured; uses the detected server zone.";
+            if (configured.Length > 0)
+            {
+                if (isSqlite)
+                {
+                    valid = configuredZone is not null;
+                    validationMessage = valid.Value ? "Resolved locally for SQLite's base-offset conversion." : "This ID does not resolve locally for SQLite.";
+                }
+                else if (databaseType.StartsWith("SqlServer", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        valid = databaseService.IsSqlServerTimeZoneValid(configured);
+                        validationMessage = valid.Value
+                            ? "Recognised by this SQL Server in sys.time_zone_info."
+                            : "Not recognised by this SQL Server. Explicit IDs must be SQL Server time zone names (for example GMT Standard Time), not IANA IDs.";
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogDebug(ex, "Could not validate the migration time zone on SQL Server.");
+                        validationMessage = "SQL Server time zone validation is unavailable; local resolution alone does not establish validity.";
+                    }
+                }
+                else
+                {
+                    validationMessage = "Time zone validation is unavailable for this database provider.";
+                }
+            }
+
             return new SystemDateMigrationInfo
             {
                 Enabled = settings.Enabled,
                 ConfiguredTimeZone = configured,
-                ConfiguredTimeZoneValid = configured.Length > 0 ? configuredZone is not null : null,
+                ConfiguredTimeZoneValid = valid,
+                TimeZoneValidationMessage = validationMessage,
+                EffectiveTimeZoneResolved = effectiveZone is not null,
+                EffectiveTimeZoneSupportsDaylightSaving = effectiveZone?.SupportsDaylightSavingTime,
                 EffectiveTimeZone = effectiveName,
                 EffectiveTimeZoneMatchesServer = effectiveZone is not null
-                    && (effectiveZone.HasSameRules(serverZone)
-                        || (effectiveZone.BaseUtcOffset == serverZone.BaseUtcOffset
-                            && effectiveZone.GetUtcOffset(utcNow) == serverZone.GetUtcOffset(utcNow))),
+                    && effectiveZone.HasSameRules(serverZone),
                 EffectiveTimeZoneIsUtc = MigrationUtcIdentifiers.Contains(effectiveName, StringComparer.OrdinalIgnoreCase)
                     || (effectiveZone is not null && effectiveZone.BaseUtcOffset == TimeSpan.Zero && !effectiveZone.SupportsDaylightSavingTime),
                 DatabaseType = databaseType,
@@ -307,20 +385,6 @@ namespace Diplo.GodMode.Services
             }
 
             return null;
-        }
-
-        private static DateTime GetProcessStartedUtc()
-        {
-            try
-            {
-                using var process = Process.GetCurrentProcess();
-                return process.StartTime.ToUniversalTime();
-            }
-            catch
-            {
-                // Deliberate: StartTime can throw in restricted hosting environments.
-                return FallbackStartedUtc;
-            }
         }
 
         internal static string FormatOffset(TimeSpan offset)

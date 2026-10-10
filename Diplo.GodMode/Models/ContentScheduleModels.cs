@@ -17,6 +17,14 @@ public class ContentScheduleOverview
     public IEnumerable<RegisteredServerInfo> Servers { get; set; } = [];
 
     public string CurrentServerRole { get; set; } = string.Empty;
+
+    public bool AutomaticServerRegistration { get; set; }
+
+    public bool ScheduledPublishingSuspended { get; set; }
+
+    public bool JobsCheckSucceeded { get; set; }
+
+    public bool ServersCheckSucceeded { get; set; }
 }
 
 public class ContentScheduleItem

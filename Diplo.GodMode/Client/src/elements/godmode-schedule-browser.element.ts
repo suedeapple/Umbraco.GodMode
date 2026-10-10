@@ -3,6 +3,7 @@ import { UmbElementMixin } from "@umbraco-cms/backoffice/element-api";
 import { godmodeGet } from "../api/client";
 import "../shared";
 import { parseApiDate } from "../shared/date-time";
+import { isGodModeAiExplainAvailable, observeGodModeAiExplainAvailability } from "../shared/ai-availability";
 import { editUrl, openEditorModal } from "../shared/edit-links";
 import { applySort, toggleSort, type SortState } from "../shared/sort";
 import type { ContentScheduleItem, ContentScheduleOverview, DistributedJobInfo } from "../shared/types";
@@ -18,16 +19,28 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
     @state() private _search = "";
     @state() private _filter: ScheduleFilter = "all";
     @state() private _sort: SortState = { column: "date", reverse: false };
+    @state() private _aiAvailable = isGodModeAiExplainAvailable();
+    private _disposeAiObserver?: () => void;
+    @state() private _error = "";
 
     override connectedCallback(): void {
         super.connectedCallback();
+        this._disposeAiObserver = observeGodModeAiExplainAvailability(() => (this._aiAvailable = true));
         void this._load();
+    }
+
+    override disconnectedCallback(): void {
+        this._disposeAiObserver?.();
+        super.disconnectedCallback();
     }
 
     private async _load() {
         this._loading = true;
+        this._error = "";
         try {
             this._overview = await godmodeGet<ContentScheduleOverview>("content/schedules");
+        } catch {
+            this._error = "Scheduled publishing information could not be refreshed. Any existing results are from the previous load.";
         } finally {
             this._loading = false;
         }
@@ -56,6 +69,7 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
                 show-reload
                 @reload=${() => void this._load()}
             >
+                ${this._error ? html`<p>${this._error}</p>` : ""}
                 ${this._loading && !this._overview ? html`<uui-loader></uui-loader>` : this._renderContent()}
             </godmode-page>
         `;
@@ -88,8 +102,8 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
                 ${this._renderSchedules()}
             </uui-box>
             <uui-box headline="Background Jobs">
-                <p class="muted">Umbraco 17 runs scheduled publishing and other housekeeping as distributed jobs that any server can pick up.</p>
-                ${this._renderJobs(overview.jobs)}
+                <p class="muted">Last-run timestamps show job bookkeeping, including runs that failed or skipped work. A recent timestamp does not establish successful publishing.</p>
+                ${overview.jobsCheckSucceeded ? this._renderJobs(overview.jobs) : html`<p>Job registrations could not be checked.</p>`}
             </uui-box>
             <uui-box headline="Servers">${this._renderServers(overview)}</uui-box>
         `;
@@ -97,9 +111,9 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
 
     private _renderSummary(overview: ContentScheduleOverview) {
         const items = overview.items;
-        const overdue = items.filter((x) => x.isOverdue).length;
+        const overdue = items.filter((x) => x.isOverdue && !x.trashed).length;
         const now = parseApiDate(overview.serverUtcNow)?.getTime() ?? Date.now();
-        const next = items.find((x) => (parseApiDate(x.date)?.getTime() ?? 0) >= now);
+        const next = items.find((x) => !x.trashed && (parseApiDate(x.date)?.getTime() ?? 0) >= now);
         const job = overview.jobs.find((x) => x.name === PUBLISHING_JOB);
 
         return html`
@@ -119,9 +133,9 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
                     <strong>${next ? next.name : "Nothing scheduled"}</strong>
                     <small>${next ? html`<godmode-date .value=${next.date} relative></godmode-date>` : ""}</small>
                 </div>
-                <div class="card ${!job ? "warning" : job.isStale ? "danger" : "positive"}">
+                <div class="card ${!overview.jobsCheckSucceeded || overview.scheduledPublishingSuspended || !job ? "warning" : job.isStale || overdue ? "danger" : ""}">
                     <span class="label">Publishing job</span>
-                    <strong>${!job ? "Not registered" : job.isStale ? "Stalled" : job.isRunning ? "Running" : "Healthy"}</strong>
+                    <strong>${!overview.jobsCheckSucceeded ? "Unknown" : overview.scheduledPublishingSuspended ? "Suspended" : !job ? "Not registered" : job.isStale ? "Last run is old" : job.isRunning ? "Marked running" : "Recently ran"}</strong>
                     <small>${job ? html`Last ran <godmode-date .value=${job.lastRun} relative></godmode-date>` : "No ScheduledPublishingJob row found"}</small>
                 </div>
             </div>
@@ -143,7 +157,7 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
                     <godmode-sort-header column="culture" .sort=${this._sort}>Culture</godmode-sort-header>
                     <godmode-sort-header column="date" .sort=${this._sort}>Scheduled For</godmode-sort-header>
                     <uui-table-head-cell>Status</uui-table-head-cell>
-                    <uui-table-head-cell></uui-table-head-cell>
+                    ${this._aiAvailable ? html`<uui-table-head-cell>AI</uui-table-head-cell>` : ""}
                 </uui-table-head>
                 ${rows.map(
                     (item) => html`
@@ -160,13 +174,13 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
                             <uui-table-cell>${item.culture || html`<span class="muted">Invariant</span>`}</uui-table-cell>
                             <uui-table-cell><godmode-date .value=${item.date} relative></godmode-date></uui-table-cell>
                             <uui-table-cell>
-                                ${item.isOverdue ? html`<uui-tag color="danger">Overdue</uui-tag>` : html`<uui-tag look="secondary">Pending</uui-tag>`}
+                                ${item.isOverdue && !item.trashed ? html`<uui-tag color="danger">Overdue</uui-tag>` : html`<uui-tag look="secondary">${item.trashed ? "Inactive" : "Pending"}</uui-tag>`}
                                 ${item.trashed ? html`<uui-tag color="warning">In recycle bin</uui-tag>` : ""}
                                 ${item.published ? html`<uui-tag look="secondary">Published</uui-tag>` : ""}
                             </uui-table-cell>
-                            <uui-table-cell class="action-cell">
+                            ${this._aiAvailable ? html`<uui-table-cell class="action-cell">
                                 <godmode-ai-explain-host .subject=${this._explainSubject(item)}></godmode-ai-explain-host>
-                            </uui-table-cell>
+                            </uui-table-cell>` : ""}
                         </uui-table-row>
                     `
                 )}
@@ -197,8 +211,8 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
                                     : ""}
                             </uui-table-cell>
                             <uui-table-cell>
-                                ${job.isStale ? html`<uui-tag color="danger">Stalled</uui-tag>` : html`<uui-tag color="positive">OK</uui-tag>`}
-                                ${job.isRunning ? html`<uui-tag look="secondary">Running</uui-tag>` : ""}
+                                ${job.isStale ? html`<uui-tag color="warning">Last run is old</uui-tag>` : html`<uui-tag look="secondary">Recently ran</uui-tag>`}
+                                ${job.isRunning ? html`<uui-tag look="secondary">Marked running</uui-tag>` : ""}
                             </uui-table-cell>
                         </uui-table-row>
                     `
@@ -208,8 +222,10 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
     }
 
     private _renderServers(overview: ContentScheduleOverview) {
+        if (!overview.serversCheckSucceeded) return html`<p>Server registrations could not be checked.</p>`;
         return html`
             <p class="muted">This server's role: <strong>${overview.currentServerRole}</strong></p>
+            ${!overview.automaticServerRegistration ? html`<p class="muted">Automatic election/check-ins are disabled for this accessor. Existing rows may be historical; their age does not establish that a server is down, and automatic cleanup is not assured.</p>` : ""}
             ${overview.servers.length
                 ? html`
                       <uui-table>
@@ -230,9 +246,9 @@ export class GodModeScheduleBrowserElement extends UmbElementMixin(LitElement) {
                                           <small class="block">Registered <godmode-date .value=${server.registeredDate}></godmode-date></small>
                                       </uui-table-cell>
                                       <uui-table-cell>
-                                          ${server.isActive ? html`<uui-tag color="positive">Active</uui-tag>` : html`<uui-tag look="secondary">Inactive</uui-tag>`}
-                                          ${server.isSchedulingPublisher ? html`<uui-tag look="secondary">Scheduling publisher</uui-tag>` : ""}
-                                          ${server.isStale ? html`<uui-tag color="warning">Stale</uui-tag>` : ""}
+                                          ${server.isActive ? html`<uui-tag color=${overview.automaticServerRegistration ? "positive" : "default"}>${overview.automaticServerRegistration ? "Active" : "Recorded active"}</uui-tag>` : html`<uui-tag look="secondary">Recorded inactive</uui-tag>`}
+                                          ${server.isSchedulingPublisher ? html`<uui-tag look="secondary">Recorded publisher</uui-tag>` : ""}
+                                          ${server.isStale ? html`<uui-tag color=${overview.automaticServerRegistration ? "warning" : "default"}>${overview.automaticServerRegistration ? "Stale" : "Historical check-in"}</uui-tag>` : ""}
                                       </uui-table-cell>
                                   </uui-table-row>
                               `

@@ -4,9 +4,9 @@ import "@umbraco-cms/backoffice/imaging";
 import { godmodeGet } from "../api/client";
 import "../shared";
 import type { ContentMediaDetail, ItemBase, MediaMap, Page } from "../shared/types";
-import { formatBytes, formatDate } from "../shared/format";
+import { formatBytes } from "../shared/format";
 import { editUrl, openEditorModal } from "../shared/edit-links";
-import { openLazyEvidenceDrawer } from "../shared/evidence-drawer";
+import { evidenceDate, openLazyEvidenceDrawer } from "../shared/evidence-drawer";
 
 @customElement("godmode-media-browser")
 export class GodModeMediaBrowserElement extends UmbElementMixin(LitElement) {
@@ -86,7 +86,7 @@ export class GodModeMediaBrowserElement extends UmbElementMixin(LitElement) {
                             { label: "Depth", value: Math.max(detail.ancestors.length - 1, 0) },
                             { label: "Extension", value: detail.mediaFile?.extension || media.ext },
                             { label: "Size", value: formatBytes(detail.mediaFile?.size ?? media.size) },
-                            { label: "Updated", value: formatDate(detail.updateDate) },
+                            { label: "Updated", value: evidenceDate(detail.updateDate) },
                             { label: "Trashed", value: detail.trashed }
                         ],
                         sections: [
@@ -101,8 +101,8 @@ export class GodModeMediaBrowserElement extends UmbElementMixin(LitElement) {
                                     rawPath: detail.path,
                                     parentId: detail.parentId,
                                     level: detail.level,
-                                    created: formatDate(detail.createDate),
-                                    updated: formatDate(detail.updateDate)
+                                    created: evidenceDate(detail.createDate),
+                                    updated: evidenceDate(detail.updateDate)
                                 }
                             },
                             {

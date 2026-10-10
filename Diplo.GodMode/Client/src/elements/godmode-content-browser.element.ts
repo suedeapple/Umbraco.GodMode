@@ -3,9 +3,8 @@ import { UmbElementMixin } from "@umbraco-cms/backoffice/element-api";
 import { godmodeGet } from "../api/client";
 import "../shared";
 import type { ContentItem, ContentMediaDetail, Lang, Page } from "../shared/types";
-import { formatDate } from "../shared/format";
 import { editUrl, openEditorModal } from "../shared/edit-links";
-import { openLazyEvidenceDrawer } from "../shared/evidence-drawer";
+import { evidenceDate, openLazyEvidenceDrawer } from "../shared/evidence-drawer";
 
 type CultureState = {
     iso: string;
@@ -169,8 +168,8 @@ export class GodModeContentBrowserElement extends UmbElementMixin(LitElement) {
                                     rawPath: detail.path,
                                     parentId: detail.parentId,
                                     level: detail.level,
-                                    created: formatDate(detail.createDate),
-                                    updated: formatDate(detail.updateDate)
+                                    created: evidenceDate(detail.createDate),
+                                    updated: evidenceDate(detail.updateDate)
                                 }
                             },
                             {
@@ -192,7 +191,7 @@ export class GodModeContentBrowserElement extends UmbElementMixin(LitElement) {
                                     edited: detail.state.edited,
                                     templateId: detail.state.templateId,
                                     publishedVersionId: detail.state.publishedVersionId,
-                                    publishDate: formatDate(detail.state.publishDate ?? ""),
+                                    publishDate: evidenceDate(detail.state.publishDate ?? ""),
                                     availableCultures: detail.state.availableCultures,
                                     publishedCultures: detail.state.publishedCultures,
                                     editedCultures: detail.state.editedCultures

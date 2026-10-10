@@ -273,8 +273,11 @@ namespace Diplo.GodMode.Services
                 }
 
                 section
+                    .Add("Configuration Scope", "Current settings only; these do not establish which settings a completed upgrade used. Fresh v17 installs need no historical conversion.")
+                    .Add("Time Zone Validation", migration.TimeZoneValidationMessage)
                     .Add("Effective Time Zone", migration.EffectiveTimeZone)
-                    .Add("Effective Time Zone Matches Server?", migration.EffectiveTimeZoneMatchesServer)
+                    .Add("Effective Time Zone Rules Match Server?", migration.EffectiveTimeZoneResolved ? migration.EffectiveTimeZoneMatchesServer.ToString() : "Unknown (zone not resolved locally)")
+                    .Add("Migration Zone Supports DST?", migration.EffectiveTimeZoneSupportsDaylightSaving?.ToString() ?? "Unknown")
                     .Add("Effective Time Zone Is UTC?", migration.EffectiveTimeZoneIsUtc)
                     .Add("Database Type", migration.DatabaseType)
                     .Add("Converts Using Base Offset Only?", migration.UsesBaseOffsetOnly ? "Yes (SQLite ignores daylight saving when converting)" : "No")
@@ -283,9 +286,16 @@ namespace Diplo.GodMode.Services
                     .Add("Final Migration State", migration.FinalMigrationState);
 
                 var logEntries = evidence.MigrationLogEntries.ToList();
+                section
+                    .Add("Evidence Checked (UTC)", FormatUtc(evidence.CheckedAtUtc))
+                    .Add("Evidence Cache", "Up to two minutes")
+                    .Add("Log Check", evidence.LogCheckMessage)
+                    .Add("Database Check", evidence.DatabaseCheckMessage)
+                    .Add("Future Date Cutoff (UTC)", FormatUtc(evidence.FutureDateCutoffUtc))
+                    .Add("Future Date Limitations", "Checks four columns only. Older shifts and shifts into the past are not detected; no matches does not prove a correct migration.");
                 if (logEntries.Count == 0)
                 {
-                    section.Add("Migration Log Entries", "None found in the current log files");
+                    section.Add("Migration Log Entries", evidence.LogCheckSucceeded ? "None found in the checked local log files" : "Unknown or partial: log check did not complete");
                 }
                 else
                 {
@@ -299,7 +309,7 @@ namespace Diplo.GodMode.Services
                 {
                     section.Add(
                         $"Future Dated {row.Table}.{row.Column}",
-                        row.Count == 0 ? "0" : $"{row.Count:n0} (latest {FormatUtc(row.Latest ?? DateTime.MinValue)})");
+                        !row.CheckSucceeded ? row.CheckMessage : row.Count == 0 ? "0" : $"{row.Count:n0} (latest {FormatUtc(row.Latest ?? DateTime.MinValue)})");
                 }
 
                 return section;
@@ -465,7 +475,7 @@ namespace Diplo.GodMode.Services
 
                 return new DiagnosticSection(
                     "Registered Servers",
-                    servers.Select(server => new Diagnostic($"{server.Id}: {server.ComputerName}", server.ToDiagnostic())));
+                    servers.Select(server => new Diagnostic($"{server.Id}: {server.ComputerName}", server.ToDiagnostic(serverTimeService.AutomaticServerRegistration))));
             }
             catch
             {

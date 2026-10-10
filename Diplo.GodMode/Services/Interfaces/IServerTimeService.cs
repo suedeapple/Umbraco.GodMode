@@ -7,6 +7,8 @@ namespace Diplo.GodMode.Services.Interfaces
     /// </summary>
     public interface IServerTimeService
     {
+        bool AutomaticServerRegistration { get; }
+
         /// <summary>
         /// Gets the server time zone and clock details. Cheap enough to call for clock drift checks.
         /// </summary>

@@ -89,6 +89,8 @@ namespace Diplo.GodMode.Services.Interfaces
 
         IEnumerable<FutureDatedRows> GetFutureDatedRows(DateTime cutoffUtc);
 
+        bool IsSqlServerTimeZoneValid(string timeZoneId);
+
         long GetContentVersionCount();
 
         long GetContentWithExcessiveVersionsCount(int versionThreshold);

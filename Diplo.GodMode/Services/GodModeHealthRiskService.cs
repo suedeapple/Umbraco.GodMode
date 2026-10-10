@@ -1,4 +1,4 @@
-﻿using Diplo.GodMode.Models;
+using Diplo.GodMode.Models;
 using Diplo.GodMode.Services.Interfaces;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -440,33 +440,35 @@ namespace Diplo.GodMode.Services
         }
 
         private void AddDateTimeFindings(List<HealthRiskFinding> findings)
+            => findings.AddRange(BuildDateTimeFindings(serverTimeService.GetServerTime(), serverTimeService.GetSystemDateEvidence()));
+
+        internal static IEnumerable<HealthRiskFinding> BuildDateTimeFindings(ServerTimeInfo time, SystemDateEvidence evidence)
         {
-            var time = serverTimeService.GetServerTime();
+            var findings = new List<HealthRiskFinding>();
             var migration = time.SystemDateMigration;
-            var evidence = serverTimeService.GetSystemDateEvidence();
 
             if (migration.ConfiguredTimeZoneValid == false)
             {
                 findings.Add(CreateFinding(
                     "time-migration-zone-invalid",
-                    "High",
+                    "Info",
                     "Dates & Time",
-                    "SystemDateMigration time zone is not recognised",
-                    $"Umbraco:CMS:SystemDateMigration:LocalServerTimeZone is set to '{migration.ConfiguredTimeZone}', which is not a time zone this server recognises. The Umbraco 17 UTC date migration will fail if it still needs to run.",
+                    "Current migration time zone is not valid for this database",
+                    $"LocalServerTimeZone is currently '{migration.ConfiguredTimeZone}'. {migration.TimeZoneValidationMessage} Current settings do not establish what a completed upgrade used; fresh v17 installs have no historical dates to convert.",
                     "Configuration",
                     "Umbraco:CMS:SystemDateMigration:LocalServerTimeZone",
                     string.Empty,
                     string.Empty,
-                    "Use a valid time zone id. SQL Server needs a Windows id such as 'GMT Standard Time'; on Linux an IANA id such as 'Europe/London' also resolves."));
+                    "Review the actual upgrade logs before changing historical dates. SQL Server requires an ID listed in sys.time_zone_info; SQLite requires an ID that resolves on the web server."));
             }
-            else if (migration.ConfiguredTimeZoneValid == true && !migration.EffectiveTimeZoneMatchesServer)
+            else if (migration.ConfiguredTimeZoneValid == true && migration.EffectiveTimeZoneResolved && !migration.EffectiveTimeZoneMatchesServer)
             {
                 findings.Add(CreateFinding(
                     "time-migration-zone-differs",
-                    "Low",
+                    "Info",
                     "Dates & Time",
                     "SystemDateMigration time zone differs from this server",
-                    $"LocalServerTimeZone is '{migration.ConfiguredTimeZone}' but this server runs in '{time.TimeZoneId}' ({time.UtcOffset}). That is correct if the database was written by a server in the configured zone, but wrong otherwise.",
+                    $"LocalServerTimeZone is currently '{migration.ConfiguredTimeZone}', with different adjustment rules from this server's '{time.TimeZoneId}'. This can be intentional after moving servers and does not establish what a completed upgrade used.",
                     "Configuration",
                     "Umbraco:CMS:SystemDateMigration:LocalServerTimeZone",
                     string.Empty,
@@ -478,25 +480,25 @@ namespace Diplo.GodMode.Services
             {
                 findings.Add(CreateFinding(
                     "time-migration-disabled",
-                    "Medium",
+                    "Info",
                     "Dates & Time",
                     "UTC system date migration is disabled",
-                    $"Umbraco:CMS:SystemDateMigration:Enabled is false and the server time zone is '{time.TimeZoneId}' ({time.UtcOffset}). If this site was upgraded from Umbraco 16 or earlier, existing dates were left in local time while Umbraco 17 now reads them as UTC.",
+                    "SystemDateMigration:Enabled is currently false. This does not establish whether an earlier upgrade skipped conversion; fresh v17 installations do not need historical conversion.",
                     "Configuration",
                     "Umbraco:CMS:SystemDateMigration:Enabled",
                     string.Empty,
                     string.Empty,
-                    "If dates look shifted, convert the system date columns to UTC manually (or restore and re-run the upgrade with the migration enabled)."));
+                    "Review upgrade logs and known historical dates. Changing this setting after a completed upgrade does not rerun the migration. Do not change stored dates based on this setting alone."));
             }
 
-            if (migration.Enabled && migration.UsesBaseOffsetOnly && !migration.EffectiveTimeZoneIsUtc && time.SupportsDaylightSavingTime)
+            if (migration.Enabled && migration.UsesBaseOffsetOnly && !migration.EffectiveTimeZoneIsUtc && migration.EffectiveTimeZoneSupportsDaylightSaving == true)
             {
                 findings.Add(CreateFinding(
                     "time-migration-sqlite-dst",
-                    "Low",
+                    "Info",
                     "Dates & Time",
                     "SQLite UTC migration ignores daylight saving",
-                    $"On SQLite the Umbraco 17 UTC migration converts dates using the base offset of '{migration.EffectiveTimeZone}' only. Dates originally written during daylight saving time may be an hour out after an upgrade.",
+                    $"SQLite converts using the base offset of '{migration.EffectiveTimeZone}' only. If that zone was used for a pre-v17 upgrade, dates written during daylight saving may be shifted. The current setting does not prove which zone the upgrade used; fresh v17 installs are unaffected.",
                     "Database",
                     "SQLite",
                     string.Empty,
@@ -508,7 +510,7 @@ namespace Diplo.GodMode.Services
             {
                 findings.Add(CreateFinding(
                     "time-migration-log-error",
-                    "High",
+                    "Medium",
                     "Dates & Time",
                     "UTC system date migration logged an error",
                     $"{entry.Timestamp:yyyy-MM-dd HH:mm:ss zzz}: {entry.Message}",
@@ -516,31 +518,55 @@ namespace Diplo.GodMode.Services
                     "MigrateSystemDatesToUtc",
                     string.Empty,
                     string.Empty,
-                    "Check the full log entry. The migration may need LocalServerTimeZone set to a Windows time zone id before it can complete."));
+                    "Check the full entry and subsequent upgrade results. A historical error does not establish an unresolved failure or justify changing stored dates."));
             }
 
-            foreach (var row in evidence.FutureDatedRows.Where(x => x.Count > 0))
+            if (!evidence.LogCheckSucceeded || !evidence.DatabaseCheckSucceeded)
+            {
+                findings.Add(CreateFinding("time-evidence-incomplete", "Low", "Dates & Time", "Date evidence is incomplete",
+                    $"Logs: {evidence.LogCheckMessage} Database: {evidence.DatabaseCheckMessage}", "Diagnostics", "Date evidence", string.Empty, string.Empty,
+                    "Review the failed checks before drawing conclusions. Evidence is cached for up to two minutes."));
+            }
+
+            foreach (var row in evidence.FutureDatedRows.Where(x => x.CheckSucceeded && x.Count > 0))
             {
                 findings.Add(CreateFinding(
                     "time-future-dated-rows",
-                    "High",
+                    "Medium",
                     "Dates & Time",
                     "System dates are in the future",
-                    $"{row.Count:n0} row(s) in {row.Table}.{row.Column} are dated after the current UTC time (latest {row.Latest:yyyy-MM-dd HH:mm} UTC). This usually means local times are being read as UTC, for example when the Umbraco 17 date migration was skipped or ran with the wrong time zone.",
+                    $"{row.Count:n0} row(s) in {row.Table}.{row.Column} are later than the check's UTC cutoff {evidence.FutureDateCutoffUtc:yyyy-MM-dd HH:mm} (latest {row.Latest:yyyy-MM-dd HH:mm} UTC). Possible causes include clock differences, imported data or shifted local dates. This check cannot detect older shifts or dates shifted into the past.",
                     "Database",
                     $"{row.Table}.{row.Column}",
                     string.Empty,
                     string.Empty,
-                    "Compare these dates with when the changes really happened. If they are shifted by the server's UTC offset, correct the columns to UTC."));
+                    "Compare with known event times and upgrade logs. No matches is not proof of correct migration; do not rewrite dates based on this heuristic alone."));
             }
+            return findings;
         }
 
         private void AddScheduledPublishingFindings(List<HealthRiskFinding> findings)
-        {
-            const int maxOverdueFindings = 25;
+            => findings.AddRange(BuildScheduledPublishingFindings(serverTimeService.GetContentSchedules()));
 
-            var schedules = serverTimeService.GetContentSchedules();
+        internal static IEnumerable<HealthRiskFinding> BuildScheduledPublishingFindings(ContentScheduleOverview schedules)
+        {
+            var findings = new List<HealthRiskFinding>();
+            const int maxOverdueFindings = 25;
             var overdue = schedules.Items.Where(x => x.IsOverdue && !x.Trashed).ToList();
+
+            if (schedules.ScheduledPublishingSuspended)
+            {
+                findings.Add(CreateFinding("schedule-suspended", overdue.Count > 0 ? "High" : "Info", "Scheduled Publishing",
+                    "Scheduled publishing is suspended", "The publishing job can update its last-run timestamp without processing schedules while publishing is suspended.",
+                    "Background Job", "ScheduledPublishingJob", string.Empty, string.Empty, "Check why scheduled publishing was suspended before resuming it."));
+            }
+
+            if (!schedules.JobsCheckSucceeded || !schedules.ServersCheckSucceeded)
+            {
+                findings.Add(CreateFinding("schedule-evidence-incomplete", "Low", "Scheduled Publishing", "Scheduling evidence is incomplete",
+                    "Job or server registrations could not be read. An unavailable check does not mean there are no jobs or servers.",
+                    "Diagnostics", "Scheduled Publishing", string.Empty, string.Empty, "Check the server logs for database read errors."));
+            }
 
             foreach (var item in overdue.Take(maxOverdueFindings))
             {
@@ -584,18 +610,18 @@ namespace Diplo.GodMode.Services
                     "background-job-stale",
                     isPublishing && schedules.Items.Any() ? "High" : "Medium",
                     "Scheduled Publishing",
-                    "Background job has stopped running",
+                    "Background job last-run timestamp is old",
                     $"The distributed job {job.Name} runs every {TimeSpan.FromSeconds(job.PeriodSeconds)} but last ran at {job.LastRun:yyyy-MM-dd HH:mm} UTC (last attempt {job.LastAttemptedRun:yyyy-MM-dd HH:mm} UTC){(job.IsRunning ? " and is still marked as running" : string.Empty)}.",
                     "Background Job",
                     job.Name,
                     string.Empty,
                     string.Empty,
                     job.IsRunning
-                        ? "A job stuck as running usually means a server stopped mid-run. Check the logs, and restart the site if it does not recover."
+                        ? "The job may still be executing or may have been interrupted. Compare the last attempt with its expected execution time and logs before considering a restart."
                         : "Check that background jobs are enabled and that at least one server is running, then check the logs for errors."));
             }
 
-            foreach (var server in schedules.Servers.Where(x => x.IsActive && x.IsStale))
+            foreach (var server in schedules.Servers.Where(x => schedules.AutomaticServerRegistration && x.IsActive && x.IsStale))
             {
                 findings.Add(CreateFinding(
                     "server-stale",
@@ -607,8 +633,9 @@ namespace Diplo.GodMode.Services
                     server.ComputerName,
                     string.Empty,
                     string.Empty,
-                    "If the server has been retired this is harmless and Umbraco will clear it; otherwise check the server is up and can reach the database."));
+                    "Check whether the server is still deployed and can reach the database. Automatic election normally deactivates stale registrations; switching to fixed roles bypasses those updates and can leave historical rows."));
             }
+            return findings;
         }
 
         private bool IsIgnoredAlias(string alias)

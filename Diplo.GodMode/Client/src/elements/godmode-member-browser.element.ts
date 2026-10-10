@@ -3,9 +3,8 @@ import { UmbElementMixin } from "@umbraco-cms/backoffice/element-api";
 import { godmodeGet } from "../api/client";
 import "../shared";
 import type { MemberGroupModel, MemberModel, Page } from "../shared/types";
-import { formatDate } from "../shared/format";
 import { editUrl, openEditorModal } from "../shared/edit-links";
-import { openEvidenceDrawer } from "../shared/evidence-drawer";
+import { evidenceDate, openEvidenceDrawer } from "../shared/evidence-drawer";
 
 @customElement("godmode-member-browser")
 export class GodModeMemberBrowserElement extends UmbElementMixin(LitElement) {
@@ -114,7 +113,7 @@ export class GodModeMemberBrowserElement extends UmbElementMixin(LitElement) {
                             name: member.name,
                             username: member.username,
                             email: member.email,
-                            created: formatDate(member.createDate),
+                            created: evidenceDate(member.createDate),
                             approved: member.isApproved,
                             lockedOut: member.isLockedOut,
                             usesTwoFactor: member.usesTwoFactor

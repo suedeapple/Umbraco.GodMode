@@ -780,6 +780,9 @@ export interface SystemDateMigrationInfo {
     enabled: boolean;
     configuredTimeZone: string;
     configuredTimeZoneValid: boolean | null;
+    timeZoneValidationMessage: string;
+    effectiveTimeZoneResolved: boolean;
+    effectiveTimeZoneSupportsDaylightSaving: boolean | null;
     effectiveTimeZone: string;
     effectiveTimeZoneMatchesServer: boolean;
     effectiveTimeZoneIsUtc: boolean;
@@ -817,8 +820,14 @@ export interface ServerTimeInfo {
 }
 
 export interface SystemDateEvidence {
+    checkedAtUtc: string;
+    futureDateCutoffUtc: string;
+    logCheckSucceeded: boolean;
+    logCheckMessage: string;
+    databaseCheckSucceeded: boolean;
+    databaseCheckMessage: string;
     migrationLogEntries: Array<{ timestamp: string | null; level: string; message: string }>;
-    futureDatedRows: Array<{ table: string; column: string; count: number; latest: string | null }>;
+    futureDatedRows: Array<{ table: string; column: string; count: number; latest: string | null; checkSucceeded: boolean; checkMessage: string }>;
 }
 
 export interface ContentScheduleItem {
@@ -863,4 +872,8 @@ export interface ContentScheduleOverview {
     jobs: DistributedJobInfo[];
     servers: RegisteredServerInfo[];
     currentServerRole: string;
+    automaticServerRegistration: boolean;
+    scheduledPublishingSuspended: boolean;
+    jobsCheckSucceeded: boolean;
+    serversCheckSucceeded: boolean;
 }

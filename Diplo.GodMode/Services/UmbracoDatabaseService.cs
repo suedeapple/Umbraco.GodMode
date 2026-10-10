@@ -1675,14 +1675,14 @@ AND {predicate}",
                 catch (Exception ex)
                 {
                     logger.LogDebug(ex, "Could not read umbracoDistributedJob.");
-                    return [];
+                    throw;
                 }
             }
         }
 
         /// <summary>
         /// Counts rows in key system date columns that are dated after the given UTC cutoff.
-        /// Future dated rows usually mean dates were stored in local time and are being read as UTC.
+        /// This is a limited symptom check, not proof of correct or incorrect historical date conversion.
         /// </summary>
         public IEnumerable<FutureDatedRows> GetFutureDatedRows(DateTime cutoffUtc)
         {
@@ -1714,6 +1714,7 @@ AND {predicate}",
                         {
                             Table = table,
                             Column = column,
+                            CheckSucceeded = true,
                             Count = row?.Total ?? 0,
                             Latest = row?.Total > 0 ? row.Latest : null
                         });
@@ -1721,11 +1722,23 @@ AND {predicate}",
                     catch (Exception ex)
                     {
                         logger.LogDebug(ex, "Could not check {Table}.{Column} for future dated rows.", table, column);
+                        results.Add(new FutureDatedRows
+                        {
+                            Table = table,
+                            Column = column,
+                            CheckMessage = "This column could not be checked. See the server logs for details."
+                        });
                     }
                 }
             }
 
             return results;
+        }
+
+        public bool IsSqlServerTimeZoneValid(string timeZoneId)
+        {
+            using var scope = scopeProvider.CreateScope(autoComplete: true);
+            return scope.Database.ExecuteScalar<int>("SELECT COUNT(*) FROM sys.time_zone_info WHERE name = @0", timeZoneId) > 0;
         }
 
         private sealed class DistributedJobRow

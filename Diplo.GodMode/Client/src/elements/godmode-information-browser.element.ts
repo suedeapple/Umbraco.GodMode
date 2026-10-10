@@ -2,7 +2,8 @@ import { LitElement, css, customElement, html, state, svg } from "@umbraco-cms/b
 import { UmbElementMixin } from "@umbraco-cms/backoffice/element-api";
 import { godmodeGet } from "../api/client";
 import "../shared";
-import { browserTimeZone, formatInZone, formatOffset, loadServerTime, parseApiDate, zoneOffsetMinutes } from "../shared/date-time";
+import "../shared/godmode-live-clock.element";
+import { browserTimeZone, formatOffset, loadServerTime, parseApiDate, zoneOffsetMinutes } from "../shared/date-time";
 import type { DeliveryApiDiagnostics, ServerTimeInfo, SystemDateEvidence, UtilityDiagnostics } from "../shared/types";
 
 /** Clock differences smaller than this are treated as normal network jitter. */
@@ -16,20 +17,13 @@ export class GodModeInformationBrowserElement extends UmbElementMixin(LitElement
     /** Server clock minus browser clock, in milliseconds. */
     @state() private _driftMs: number | null = null;
     @state() private _roundTripMs = 0;
-    @state() private _now = Date.now();
     @state() private _evidence: SystemDateEvidence | null = null;
     @state() private _evidenceLoading = false;
-    private _clockTimer?: number;
+    @state() private _evidenceError = "";
 
     override connectedCallback(): void {
         super.connectedCallback();
         void this._load();
-        this._clockTimer = window.setInterval(() => (this._now = Date.now()), 1000);
-    }
-
-    override disconnectedCallback(): void {
-        window.clearInterval(this._clockTimer);
-        super.disconnectedCallback();
     }
 
     private async _loadServerTime() {
@@ -44,10 +38,12 @@ export class GodModeInformationBrowserElement extends UmbElementMixin(LitElement
 
     private async _loadEvidence() {
         this._evidenceLoading = true;
+        this._evidenceError = "";
         try {
             this._evidence = await godmodeGet<SystemDateEvidence>("utilities/system-date-evidence");
         } catch (e) {
             console.error(e);
+            this._evidenceError = "Evidence could not be loaded. Try again; no checks have been confirmed.";
         } finally {
             this._evidenceLoading = false;
         }
@@ -344,8 +340,6 @@ export class GodModeInformationBrowserElement extends UmbElementMixin(LitElement
         const serverZone = t.ianaId || (t.isUtc ? "UTC" : "");
         const browserZone = browserTimeZone();
         const browserOffset = zoneOffsetMinutes(browserZone);
-        // The server clock as it is now, corrected for measured drift.
-        const serverNow = new Date(this._now + (this._driftMs ?? 0));
         const migration = t.systemDateMigration;
 
         return html`
@@ -359,9 +353,9 @@ export class GodModeInformationBrowserElement extends UmbElementMixin(LitElement
                         <h5>Server</h5>
                         <dl class="compact-dl">
                             <dt>Server time</dt>
-                            <dd><strong>${serverZone ? formatInZone(serverNow, serverZone) : t.serverLocalNow}</strong></dd>
+                            <dd><strong><godmode-live-clock .timeZone=${serverZone || "UTC"} .driftMs=${this._driftMs ?? 0} .offsetMinutes=${serverZone ? 0 : t.utcOffsetMinutes}></godmode-live-clock></strong></dd>
                             <dt>UTC</dt>
-                            <dd>${formatInZone(serverNow, "UTC")}</dd>
+                            <dd><godmode-live-clock timeZone="UTC" .driftMs=${this._driftMs ?? 0}></godmode-live-clock></dd>
                             <dt>Time zone</dt>
                             <dd>${t.timeZoneId}${t.ianaId && t.ianaId !== t.timeZoneId ? html` <small>(${t.ianaId})</small>` : ""}</dd>
                             ${t.windowsId && t.windowsId !== t.timeZoneId ? html`<dt>Windows id</dt><dd>${t.windowsId}</dd>` : ""}
@@ -380,7 +374,7 @@ export class GodModeInformationBrowserElement extends UmbElementMixin(LitElement
                         <h5>You</h5>
                         <dl class="compact-dl">
                             <dt>Browser time</dt>
-                            <dd><strong>${formatInZone(new Date(this._now), browserZone)}</strong></dd>
+                            <dd><strong><godmode-live-clock .timeZone=${browserZone}></godmode-live-clock></strong></dd>
                             <dt>Time zone</dt>
                             <dd>${browserZone} <small>(${formatOffset(browserOffset)})</small></dd>
                             <dt>Difference</dt>
@@ -398,21 +392,24 @@ export class GodModeInformationBrowserElement extends UmbElementMixin(LitElement
                         <h5>UTC Date Migration</h5>
                         <dl class="compact-dl">
                             <dt>Enabled</dt>
-                            <dd><uui-tag color=${migration.enabled || migration.effectiveTimeZoneIsUtc ? "positive" : "warning"}>${migration.enabled ? "Yes" : "No"}</uui-tag></dd>
+                            <dd>${migration.enabled ? "Yes" : "No"} <small>(current setting)</small></dd>
                             <dt>Time zone</dt>
                             <dd>
                                 ${migration.configuredTimeZone
                                     ? html`${migration.configuredTimeZone}
-                                          <uui-tag color=${migration.configuredTimeZoneValid ? (migration.effectiveTimeZoneMatchesServer ? "positive" : "warning") : "danger"}>
-                                              ${migration.configuredTimeZoneValid ? (migration.effectiveTimeZoneMatchesServer ? "Matches server" : "Differs from server") : "Not recognised"}
+                                           <uui-tag color=${migration.configuredTimeZoneValid === false ? "warning" : "default"}>
+                                               ${migration.configuredTimeZoneValid === null ? "Not validated" : migration.configuredTimeZoneValid ? "Valid for database" : "Not valid for database"}
                                           </uui-tag>`
                                     : html`<span class="muted">Not configured, uses ${migration.effectiveTimeZone}</span>`}
                             </dd>
+                            <dt>Validation</dt><dd>${migration.timeZoneValidationMessage}</dd>
+                            <dt>Rules match server</dt><dd>${migration.effectiveTimeZoneResolved ? (migration.effectiveTimeZoneMatchesServer ? "Yes" : "No") : "Unknown"}</dd>
                             <dt>Database</dt>
                             <dd>${migration.databaseType}${migration.usesBaseOffsetOnly ? html` <small>(converts with base offset, ignores daylight saving)</small>` : ""}</dd>
                             <dt>Migrations</dt>
                             <dd><uui-tag color=${migration.upgradeComplete ? "positive" : "warning"}>${migration.upgradeComplete ? "All applied" : "Pending"}</uui-tag></dd>
                         </dl>
+                        <p class="muted">Current settings do not establish what a completed upgrade used. Fresh v17 installs need no historical conversion; changing settings now does not rerun the migration.</p>
                         ${this._renderEvidence()}
                     </div>
                 </div>
@@ -440,15 +437,18 @@ export class GodModeInformationBrowserElement extends UmbElementMixin(LitElement
     private _renderEvidence() {
         const evidence = this._evidence;
         if (!evidence) {
-            return html`<uui-button compact look="secondary" label="Check migration evidence" ?disabled=${this._evidenceLoading} @click=${() => void this._loadEvidence()}>
+            return html`${this._evidenceError ? html`<p>${this._evidenceError}</p>` : ""}<uui-button compact look="secondary" label="Check migration evidence" ?disabled=${this._evidenceLoading} @click=${() => void this._loadEvidence()}>
                 ${this._evidenceLoading ? "Checking..." : "Check migration evidence"}
             </uui-button>`;
         }
 
-        const future = evidence.futureDatedRows.filter((row) => row.count > 0);
+        const future = evidence.futureDatedRows.filter((row) => row.checkSucceeded && row.count > 0);
 
         return html`
             <h5 class="subheading">Evidence</h5>
+            <p class="muted">Checked <godmode-date .value=${evidence.checkedAtUtc}></godmode-date>; cached for up to two minutes.</p>
+            <p>${evidence.logCheckMessage}</p>
+            <p>${evidence.databaseCheckMessage}</p>
             <ul class="plain">
                 ${evidence.migrationLogEntries.length
                     ? evidence.migrationLogEntries.map(
@@ -457,7 +457,7 @@ export class GodModeInformationBrowserElement extends UmbElementMixin(LitElement
                               <span>${entry.message} <small><godmode-date .value=${entry.timestamp}></godmode-date></small></span>
                           </li>`
                       )
-                    : html`<li><span class="muted">No migration entries in the current log files.</span></li>`}
+                     : html`<li><span class="muted">${evidence.logCheckSucceeded ? "No migration entries in the checked local log files." : "Log evidence is unavailable or partial."}</span></li>`}
                 ${future.length
                     ? future.map(
                           (row) => html`<li>
@@ -465,8 +465,10 @@ export class GodModeInformationBrowserElement extends UmbElementMixin(LitElement
                               <span>future dated rows in <code>${row.table}.${row.column}</code></span>
                           </li>`
                       )
-                    : html`<li><uui-tag color="positive">OK</uui-tag><span>No future dated system rows</span></li>`}
+                     : evidence.databaseCheckSucceeded ? html`<li><span>No future dated rows in the four checked columns.</span></li>` : html`<li><uui-tag color="warning">Incomplete</uui-tag><span>Future date checks are unavailable or partial.</span></li>`}
+                ${evidence.futureDatedRows.filter((row) => !row.checkSucceeded).map((row) => html`<li>${row.table}.${row.column}: ${row.checkMessage}</li>`)}
             </ul>
+            <p class="muted">Future date cutoff: <godmode-date .value=${evidence.futureDateCutoffUtc}></godmode-date>. Older shifts and shifts into the past are not detected. No matches does not prove a correct migration; future dates may also come from clock differences or imports.</p>
         `;
     }
 

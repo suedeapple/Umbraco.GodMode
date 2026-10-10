@@ -33,9 +33,10 @@ namespace Diplo.GodMode.Models
         public static bool IsStaleAt(DateTime lastNotifiedUtc, DateTime utcNow)
             => DateTime.SpecifyKind(lastNotifiedUtc, DateTimeKind.Utc) < utcNow - StaleAfter;
 
-        public string ToDiagnostic()
+        public string ToDiagnostic(bool automaticRegistration = true)
         {
-            var stale = IsStaleAt(this.LastNotifiedDate, DateTime.UtcNow) ? " (stale: no check-in for over " + StaleAfter.TotalMinutes + " minutes)" : String.Empty;
+            var stale = !automaticRegistration ? " (historical registration: automatic check-ins disabled)"
+                : IsStaleAt(this.LastNotifiedDate, DateTime.UtcNow) ? " (stale: no check-in for over " + StaleAfter.TotalMinutes + " minutes)" : String.Empty;
             return String.Format("{0}{1} - Registered: {2:yyyy-MM-dd HH:mm:ss} UTC, Last check-in: {3:yyyy-MM-dd HH:mm:ss} UTC{4}, Active: {5}, Is Scheduling Publisher (Master)?: {6}", this.IsSchedulingPublisher ? "* " : String.Empty, this.Address, this.RegisteredDate, this.LastNotifiedDate, stale, this.IsActive, this.IsSchedulingPublisher);
         }
     }
