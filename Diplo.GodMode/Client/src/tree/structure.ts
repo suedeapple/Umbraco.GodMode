@@ -48,14 +48,14 @@ const GROUPS: GroupDef[] = [
         name: "Content & schema",
         ids: [
             "contentBrowser",
-            "scheduleBrowser",
             "docTypeBrowser",
             "dataTypeBrowser",
             "templateBrowser",
             "partialBrowser",
             "mediaBrowser",
             "memberBrowser",
-            "tagBrowser"
+            "tagBrowser",
+            "scheduleBrowser"
         ]
     },
     { unique: "group-relationships", name: "Relationships & usage", ids: ["referenceGraph", "usageBrowser", "elementTypeUsage"] },
